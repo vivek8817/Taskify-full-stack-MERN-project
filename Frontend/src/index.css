@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+@theme {
+  /* --- BRAND COLORS --- */
+  --color-brand: #C5F82A;
+  --color-brand-dark: #FFFFFF; 
+
+  /* --- SURFACE COLORS (Strict Dark Mode) --- */
+  --color-background: #091315; 
+  --color-surface: #141F22; 
+  --color-mainDash: #0E181B; 
+
+  /* --- TYPOGRAPHY --- */
+  --color-text-main: #F9FAFB; 
+  --color-text-muted: #9CA3AF;
+  --font-sans: "Inter", sans-serif;
+
+  /* --- SPACING ENGINE --- */
+  --spacing: 0.25rem; /* 4px base. Use p-2 (8px), p-4 (16px), p-8 (32px) etc. */
+  --spacing-sidebar: 280px; 
+  --spacing-header: 80px;  
+  --spacing-icon: 40px;    
+
+  /* --- BORDER RADIUS --- */
+  --radius-xl: 0.5rem; /* 8px radius to keep the grid consistent */
+  --radius-full: 9999px;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-text-main antialiased;
+    font-size: 16px; /* Base 16px enforcing */
+  }
+  
+  /* Form inputs base styling for minimalist look */
+  input {
+    @apply bg-transparent outline-none;
+  }
+}

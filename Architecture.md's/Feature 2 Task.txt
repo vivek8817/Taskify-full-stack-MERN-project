@@ -1,0 +1,712 @@
+Chalo bhai, ab asli action shuru karte hain! Feature 2 (Task CRUD) application ka dil hai.
+
+Kyunki aapne backend ka architecture itna solid aur type-safe banaya hai, hum sabse pehle **Backend (TypeScript)** mein hi Task model, CRUD controllers aur Auth Middleware banayenge. Uske baad inko protect karke frontend se connect karenge.
+
+### 🟢 STEP 11: Auth Middleware (Route Protector)
+
+Koi bhi random user tasks access nahi kar sakta. Humein ek middleware chahiye jo check kare ki request ke sath valid JWT token aaya hai ya nahi.
+
+`src/middleware` folder banaiye aur usme `authMiddleware.ts` add karein:
+
+```typescript
+// backend/src/middleware/authMiddleware.ts
+import jwt from 'jsonwebtoken';
+import { Request, Response, NextFunction } from 'express';
+import User from '../models/UserModel';
+
+// Express Request type ko extend kar rahe hain taaki req.user inject kar sakein
+export interface AuthRequest extends Request {
+  user?: any;
+}
+
+export const protect = async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+  let token;
+
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    try {
+      // Token extract karo: "Bearer eyJhbG..." -> "eyJhbG..."
+      token = req.headers.authorization.split(' ')[1];
+
+      // Token verify karo
+      const decoded: any = jwt.verify(token, process.env.JWT_SECRET as string);
+
+      // User ko database se fetch karo (password chhod kar) aur req mein daal do
+      req.user = await User.findById(decoded.id).select('-password');
+
+      next();
+    } catch (error) {
+      res.status(401).json({ message: 'Not authorized, token failed' });
+    }
+  }
+
+  if (!token) {
+    res.status(401).json({ message: 'Not authorized, no token' });
+  }
+};
+
+```
+
+### 🟢 STEP 12: The Task Model
+
+Ab Mongoose ka use karke ek strictly-typed Task schema banate hain jo har task ko ek specific User se link karega.
+
+`src/models/TaskModel.ts` banaiye:
+
+```typescript
+// backend/src/models/TaskModel.ts
+import mongoose, { Document, Schema } from 'mongoose';
+
+// TypeScript Interface
+export interface ITask extends Document {
+  title: string;
+  completed: boolean;
+  user: mongoose.Schema.Types.ObjectId;
+}
+
+const taskSchema: Schema = new Schema(
+  {
+    title: { 
+      type: String, 
+      required: [true, 'Please add a text value'] 
+    },
+    completed: { 
+      type: Boolean, 
+      default: false 
+    },
+    user: { 
+      type: Schema.Types.ObjectId, 
+      required: true, 
+      ref: 'User' // Relational link to UserModel
+    },
+  },
+  { timestamps: true }
+);
+
+export default mongoose.model<ITask>('Task', taskSchema);
+
+```
+
+### 🟢 STEP 13: Task Controller (The CRUD Logic)
+
+Yahan hum Create, Read, Update, aur Delete ke functions likhenge. Dhyaan rakhna, har user ko sirf **apne hi tasks** dikhne chahiye aur wo sirf apne hi tasks delete/update kar sake.
+
+`src/controllers/taskController.ts` banaiye:
+
+```typescript
+// backend/src/controllers/taskController.ts
+import { Response } from 'express';
+import Task from '../models/TaskModel';
+import { AuthRequest } from '../middleware/authMiddleware';
+
+// @desc    Get user tasks
+// @route   GET /api/tasks
+export const getTasks = async (req: AuthRequest, res: Response): Promise<void> => {
+  const tasks = await Task.find({ user: req.user.id }).sort({ createdAt: -1 }); // Naye tasks pehle
+  res.status(200).json(tasks);
+};
+
+// @desc    Create a task
+// @route   POST /api/tasks
+export const createTask = async (req: AuthRequest, res: Response): Promise<void> => {
+  if (!req.body.title) {
+    res.status(400).json({ message: 'Please add a task title' });
+    return;
+  }
+
+  const task = await Task.create({
+    title: req.body.title,
+    user: req.user.id,
+  });
+
+  res.status(201).json(task);
+};
+
+// @desc    Update a task (toggle completion/edit text)
+// @route   PUT /api/tasks/:id
+export const updateTask = async (req: AuthRequest, res: Response): Promise<void> => {
+  const task = await Task.findById(req.params.id);
+
+  if (!task) {
+    res.status(404).json({ message: 'Task not found' });
+    return;
+  }
+
+  // Check karo ki yeh task usi user ka hai ya nahi
+  if (task.user.toString() !== req.user.id) {
+    res.status(401).json({ message: 'User not authorized' });
+    return;
+  }
+
+  const updatedTask = await Task.findByIdAndUpdate(req.params.id, req.body, {
+    new: true, // Updated document return karega
+  });
+
+  res.status(200).json(updatedTask);
+};
+
+// @desc    Delete a task
+// @route   DELETE /api/tasks/:id
+export const deleteTask = async (req: AuthRequest, res: Response): Promise<void> => {
+  const task = await Task.findById(req.params.id);
+
+  if (!task) {
+    res.status(404).json({ message: 'Task not found' });
+    return;
+  }
+
+  // Ownership check
+  if (task.user.toString() !== req.user.id) {
+    res.status(401).json({ message: 'User not authorized' });
+    return;
+  }
+
+  await task.deleteOne();
+  
+  res.status(200).json({ id: req.params.id });
+};
+
+```
+
+### 🟢 STEP 14: Task Routes & App Mounting
+
+Ab in controllers ko routes se attach karte hain aur `protect` middleware lagate hain taaki routes secure ho jayein.
+
+`src/routes/taskRoutes.ts` banaiye:
+
+```typescript
+// backend/src/routes/taskRoutes.ts
+import express from 'express';
+import { getTasks, createTask, updateTask, deleteTask } from '../controllers/taskController';
+import { protect } from '../middleware/authMiddleware';
+
+const router = express.Router();
+
+// protect middleware ko sabhi routes par apply karne ka shortcut
+router.use(protect); 
+
+router.route('/').get(getTasks).post(createTask);
+router.route('/:id').put(updateTask).delete(deleteTask);
+
+export default router;
+
+```
+
+**Finally, is naye route ko apne `src/app.ts` (ya `server.ts`) mein mount kar lijiye:**
+
+```typescript
+// apne app.ts mein routes mount section ke paas:
+import taskRoutes from './routes/taskRoutes';
+
+//...
+app.use('/api/auth', authRoutes);
+app.use('/api/tasks', taskRoutes); // <-- Yeh line add kijiye
+
+```
+
+⚡ **Testing Step:**
+Ek baar backend start karke Postman par test kar lijiye:
+
+1. Puraana `/api/auth/login` hit karke `token` copy karein.
+2. `GET /api/tasks` par request maarein, but Headers mein `Authorization: Bearer <your_token>` zaroor daalein. Empty array `[]` aana chahiye.
+3. `POST /api/tasks` par JSON body `{"title": "Learn TS Backend"}` bhej kar test karein.
+
+Jaise hi backend APIs solid ho jayein aur Postman mein chalne lagein, mujhe bataiye. Fir hum seedha **Frontend (React)** par jump karenge, wahan Protected Routes setup karenge aur aapke 8-point grid design rules follow karte hue **Dashboard UI** banayenge!
+
+Perfect! Backend ki foundation ekdum solid ho chuki hai. Ab hum wapas apne React frontend par chalte hain.
+
+Is phase mein hum **Micro-learning** approach use karenge. Sabse pehle hum API layer setup karenge aur apne application ko secure karenge taaki bina login ke koi Dashboard na dekh sake (Protected Routes).
+
+### 🟢 STEP 15: Task API Layer (`src/api/tasks.ts`)
+
+Frontend se backend ko request bhejte waqt humein ab apna JWT token bhi sath bhejna hoga.
+
+`src/api` folder mein ek nayi file banaiye `tasks.ts`:
+
+```typescript
+// src/api/tasks.ts
+import axios from 'axios';
+
+const API_URL = 'http://localhost:5000/api/tasks';
+
+export interface Task {
+  _id: string;
+  title: string;
+  completed: boolean;
+  createdAt: string;
+}
+
+// Token attach karne ke liye helper function
+const getAuthHeaders = () => {
+  const user = JSON.parse(localStorage.getItem('taskify_user') || '{}');
+  return {
+    headers: {
+      Authorization: `Bearer ${user.token}`,
+    },
+  };
+};
+
+export const taskAPI = {
+  getTasks: async (): Promise<Task[]> => {
+    const response = await axios.get(API_URL, getAuthHeaders());
+    return response.data;
+  },
+
+  createTask: async (title: string): Promise<Task> => {
+    const response = await axios.post(API_URL, { title }, getAuthHeaders());
+    return response.data;
+  },
+
+  updateTask: async (id: string, taskData: Partial<Task>): Promise<Task> => {
+    const response = await axios.put(`${API_URL}/${id}`, taskData, getAuthHeaders());
+    return response.data;
+  },
+
+  deleteTask: async (id: string): Promise<{ id: string }> => {
+    const response = await axios.delete(`${API_URL}/${id}`, getAuthHeaders());
+    return response.data;
+  }
+};
+
+```
+
+### 🟢 STEP 16: Create Protected Route Wrapper
+
+Humein ek aisa component chahiye jo check kare ki user logged in hai ya nahi. Agar nahi, toh usko wapas Login page par bhej de.
+
+`src/components` folder mein `ProtectedRoute.tsx` banaiye:
+
+```tsx
+// src/components/ProtectedRoute.tsx
+import React from 'react';
+import { Navigate, Outlet } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+
+const ProtectedRoute: React.FC = () => {
+  const { isAuthenticated } = useAuth();
+
+  // Agar user logged in nahi hai, toh Login par bhej do
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
+  // Agar logged in hai, toh child routes (Dashboard) render karo
+  return <Outlet />;
+};
+
+export default ProtectedRoute;
+
+```
+
+### 🟢 STEP 17: Dashboard Skeleton & Wiring
+
+Ab hum ek basic Dashboard page banayenge jahan hum tasks fetch karenge. Isko hum minimalist dark UI aur strict 8-point grid denominations (p-4, p-8, gap-4) ke sath design karenge.
+
+`src/pages` mein `Dashboard.tsx` banaiye:
+
+```tsx
+// src/pages/Dashboard.tsx
+import React, { useEffect, useState } from 'react';
+import { useAuth } from '../context/AuthContext';
+import { taskAPI, Task } from '../api/tasks';
+
+const Dashboard: React.FC = () => {
+  const { user, logout } = useAuth();
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchTasks = async () => {
+      try {
+        const data = await taskAPI.getTasks();
+        setTasks(data);
+      } catch (error) {
+        console.error("Failed to fetch tasks", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchTasks();
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-background flex flex-col items-center p-8">
+      
+      {/* Header Section (8-point grid: max-w-3xl, w-full, mb-8) */}
+      <header className="w-full max-w-3xl flex justify-between items-center mb-8 bg-surface p-4 rounded-xl border border-mainDash shadow-lg">
+        <div className="flex items-center gap-3">
+          <iconify-icon icon="mdi:check-all" width="28" style={{ color: 'var(--color-brand)' }} />
+          <h1 className="text-xl font-bold text-text-main">Taskify Workspace</h1>
+        </div>
+        
+        <div className="flex items-center gap-4">
+          <span className="text-text-muted text-sm font-medium">Hello, {user?.name}</span>
+          <button 
+            onClick={logout}
+            className="flex items-center gap-2 px-4 py-2 bg-mainDash hover:bg-background text-text-main border border-mainDash rounded-xl transition-all text-sm font-medium"
+          >
+            <iconify-icon icon="mdi:logout" width="18" />
+            Logout
+          </button>
+        </div>
+      </header>
+
+      {/* Main Content Area */}
+      <main className="w-full max-w-3xl flex flex-col gap-8">
+        
+        {/* Task Form Placeholder (Agle step mein aayega) */}
+        <div className="bg-surface p-6 rounded-xl border border-mainDash shadow-md text-center text-text-muted">
+          [ Task Input Form Will Go Here ]
+        </div>
+
+        {/* Tasks List Placeholder */}
+        <div className="bg-surface p-6 rounded-xl border border-mainDash shadow-md flex flex-col gap-4">
+          <h2 className="text-lg font-bold text-text-main border-b border-mainDash pb-4">Your Tasks</h2>
+          
+          {loading ? (
+            <div className="flex justify-center p-8">
+              <iconify-icon icon="eos-icons:loading" width="32" style={{ color: 'var(--color-brand)' }} />
+            </div>
+          ) : tasks.length === 0 ? (
+            <p className="text-center text-text-muted p-8">No tasks found. Start creating some!</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {tasks.map(task => (
+                <div key={task._id} className="p-4 bg-background border border-mainDash rounded-xl text-text-main">
+                  {task.title}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </main>
+
+    </div>
+  );
+};
+
+export default Dashboard;
+
+```
+
+### 🟢 STEP 18: Update `App.tsx` Routes
+
+Ab apne `App.tsx` mein changes karein taaki `/dashboard` route ko humare `ProtectedRoute` se cover kiya ja sake.
+
+```tsx
+// src/App.tsx
+import { Routes, Route, Navigate } from 'react-router-dom';
+import Login from './pages/Login';
+import Register from './pages/Register';
+import Dashboard from './pages/Dashboard';
+import ProtectedRoute from './components/ProtectedRoute';
+
+function App() {
+  return (
+    <Routes>
+      {/* Default redirect to dashboard */}
+      <Route path="/" element={<Navigate to="/dashboard" replace />} />
+      
+      {/* Public Routes */}
+      <Route path="/login" element={<Login />} />
+      <Route path="/register" element={<Register />} />
+
+      {/* Protected Routes */}
+      <Route element={<ProtectedRoute />}>
+        <Route path="/dashboard" element={<Dashboard />} />
+      </Route>
+    </Routes>
+  );
+}
+
+export default App;
+
+```
+
+⚡ **Testing Time:**
+
+1. Login/Register page par jayein aur authenticate karein.
+2. Success hone par aap directly `/dashboard` par aayenge.
+3. Dashboard par aapka naam, Logout button, aur (agar aapne Postman se koi task banaya tha toh) aapke tasks dikhne chahiye.
+4. Agar aap manually URL mein `/dashboard` type karte hain bina login kiye, toh app aapko wapas `/login` par bhej degi.
+
+Ek baar yeh wire-up test kar lijiye. Agar route protection aur data fetching smoothly chal rahi hai, toh batayein. Next step mein hum **TaskForm aur TaskItem components** banayenge actual CRUD functionality complete karne ke liye!
+
+Chaliye, is feature ko ekdum finish karte hain. Ab hum apne placeholders ko actual functional components se replace karenge: `TaskForm` naye tasks add karne ke liye, aur `TaskItem` individual tasks display, toggle, aur delete karne ke liye. Sath hi hum **Feature 3: Filtering** (All, Pending, Completed) bhi isi dashboard mein implement kar denge.
+
+### 🟢 STEP 19: Task Form Component (`src/components/TaskForm.tsx`)
+
+Yeh component user input lega aur task create karne ka function trigger karega. Minimum 16px font size aur 8-point spacing rule apply karenge.
+
+`src/components` mein `TaskForm.tsx` banaiye:
+
+```tsx
+// src/components/TaskForm.tsx
+import React, { useState } from 'react';
+
+interface TaskFormProps {
+  onAdd: (title: string) => Promise<void>;
+}
+
+const TaskForm: React.FC<TaskFormProps> = ({ onAdd }) => {
+  const [title, setTitle] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title.trim()) return;
+
+    setIsSubmitting(true);
+    await onAdd(title);
+    setTitle('');
+    setIsSubmitting(false);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="bg-surface p-6 rounded-xl border border-mainDash shadow-md flex gap-4">
+      <input
+        type="text"
+        placeholder="What needs to be done?"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        disabled={isSubmitting}
+        className="flex-1 bg-background border border-mainDash rounded-xl py-3 px-4 text-text-main text-base placeholder:text-text-muted focus:border-brand focus:ring-1 focus:ring-brand transition-all outline-none disabled:opacity-50"
+      />
+      <button
+        type="submit"
+        disabled={isSubmitting || !title.trim()}
+        className="bg-brand text-brand-dark font-bold px-6 py-3 rounded-xl hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-base"
+      >
+        <iconify-icon icon="mdi:plus-circle" width="24" />
+        <span>Add Task</span>
+      </button>
+    </form>
+  );
+};
+
+export default TaskForm;
+
+```
+
+### 🟢 STEP 20: Task Item Component (`src/components/TaskItem.tsx`)
+
+Yeh component ek single task ko render karega. Isme hum completion status toggle karne ka checkbox aur delete karne ka button denge.
+
+`src/components` mein `TaskItem.tsx` banaiye:
+
+```tsx
+// src/components/TaskItem.tsx
+import React from 'react';
+import { Task } from '../api/tasks';
+
+interface TaskItemProps {
+  task: Task;
+  onToggle: (id: string, completed: boolean) => void;
+  onDelete: (id: string) => void;
+}
+
+const TaskItem: React.FC<TaskItemProps> = ({ task, onToggle, onDelete }) => {
+  return (
+    <div className={`flex items-center justify-between p-4 rounded-xl border transition-all ${task.completed ? 'bg-background/50 border-mainDash opacity-70' : 'bg-background border-mainDash hover:border-text-muted/30'}`}>
+      
+      <div className="flex items-center gap-4 flex-1 cursor-pointer" onClick={() => onToggle(task._id, !task.completed)}>
+        {/* Custom Checkbox mimicking radio/checkbox logic */}
+        <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${task.completed ? 'bg-brand border-brand' : 'border-text-muted'}`}>
+          {task.completed && <iconify-icon icon="mdi:check" width="16" style={{ color: 'var(--color-brand-dark)' }} />}
+        </div>
+        
+        <span className={`text-base font-medium transition-all ${task.completed ? 'text-text-muted line-through' : 'text-text-main'}`}>
+          {task.title}
+        </span>
+      </div>
+
+      <button 
+        onClick={() => onDelete(task._id)}
+        className="p-2 text-text-muted hover:text-red-500 hover:bg-red-500/10 rounded-xl transition-all flex items-center justify-center"
+        title="Delete Task"
+      >
+        <iconify-icon icon="mdi:trash-can-outline" width="24" />
+      </button>
+
+    </div>
+  );
+};
+
+export default TaskItem;
+
+```
+
+### 🟢 STEP 21: Integrating & Filtering in `Dashboard.tsx`
+
+Ab hum `Dashboard.tsx` ko update karenge. Isme hum:
+
+1. `TaskForm` aur `TaskItem` import karenge.
+2. CRUD functions (add, toggle, delete) likhenge jo state aur API dono ko update karenge.
+3. UI filter (All / Pending / Completed) add karenge.
+
+Apne existing `src/pages/Dashboard.tsx` ko is code se replace kar dijiye:
+
+```tsx
+// src/pages/Dashboard.tsx
+import React, { useEffect, useState } from 'react';
+import { useAuth } from '../context/AuthContext';
+import { taskAPI, Task } from '../api/tasks';
+import TaskForm from '../components/TaskForm';
+import TaskItem from '../components/TaskItem';
+
+type FilterType = 'all' | 'pending' | 'completed';
+
+const Dashboard: React.FC = () => {
+  const { user, logout } = useAuth();
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<FilterType>('all');
+
+  // Fetch initial tasks
+  useEffect(() => {
+    const fetchTasks = async () => {
+      try {
+        const data = await taskAPI.getTasks();
+        setTasks(data);
+      } catch (error) {
+        console.error("Failed to fetch tasks", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchTasks();
+  }, []);
+
+  // CRUD Handlers
+  const handleAddTask = async (title: string) => {
+    try {
+      const newTask = await taskAPI.createTask(title);
+      setTasks([newTask, ...tasks]); // Optimistically prepend new task
+    } catch (error) {
+      console.error("Failed to add task", error);
+    }
+  };
+
+  const handleToggleTask = async (id: string, completed: boolean) => {
+    // Optimistic UI update for snappy feel
+    setTasks(tasks.map(task => task._id === id ? { ...task, completed } : task));
+    try {
+      await taskAPI.updateTask(id, { completed });
+    } catch (error) {
+      // Revert if API fails
+      setTasks(tasks.map(task => task._id === id ? { ...task, completed: !completed } : task));
+      console.error("Failed to toggle task", error);
+    }
+  };
+
+  const handleDeleteTask = async (id: string) => {
+    // Optimistic UI update
+    const previousTasks = [...tasks];
+    setTasks(tasks.filter(task => task._id !== id));
+    try {
+      await taskAPI.deleteTask(id);
+    } catch (error) {
+      setTasks(previousTasks); // Revert on failure
+      console.error("Failed to delete task", error);
+    }
+  };
+
+  // Filter Logic
+  const filteredTasks = tasks.filter(task => {
+    if (filter === 'completed') return task.completed;
+    if (filter === 'pending') return !task.completed;
+    return true; // 'all'
+  });
+
+  return (
+    <div className="min-h-screen bg-background flex flex-col items-center p-8">
+      
+      {/* Header Section */}
+      <header className="w-full max-w-3xl flex justify-between items-center mb-8 bg-surface p-4 rounded-xl border border-mainDash shadow-lg">
+        <div className="flex items-center gap-3">
+          <iconify-icon icon="mdi:check-all" width="32" style={{ color: 'var(--color-brand)' }} />
+          <h1 className="text-xl font-bold text-text-main">Taskify Workspace</h1>
+        </div>
+        
+        <div className="flex items-center gap-4">
+          <span className="text-text-muted text-base font-medium">Hello, {user?.name}</span>
+          <button 
+            onClick={logout}
+            className="flex items-center gap-2 px-4 py-2 bg-mainDash hover:bg-background text-text-main border border-mainDash rounded-xl transition-all text-base font-medium"
+          >
+            <iconify-icon icon="mdi:logout" width="20" />
+            Logout
+          </button>
+        </div>
+      </header>
+
+      {/* Main Content Area */}
+      <main className="w-full max-w-3xl flex flex-col gap-8">
+        
+        {/* Add Task Form */}
+        <TaskForm onAdd={handleAddTask} />
+
+        {/* Task List & Filters */}
+        <div className="bg-surface p-6 rounded-xl border border-mainDash shadow-md flex flex-col gap-6">
+          
+          {/* Header & Filter Controls */}
+          <div className="flex justify-between items-center border-b border-mainDash pb-4">
+            <h2 className="text-xl font-bold text-text-main">Your Tasks</h2>
+            
+            <div className="flex bg-background border border-mainDash rounded-xl p-1">
+              {(['all', 'pending', 'completed'] as FilterType[]).map(f => (
+                <button
+                  key={f}
+                  onClick={() => setFilter(f)}
+                  className={`px-4 py-2 rounded-xl text-base font-medium capitalize transition-all ${filter === f ? 'bg-surface shadow-sm text-text-main' : 'text-text-muted hover:text-text-main'}`}
+                >
+                  {f}
+                </button>
+              ))}
+            </div>
+          </div>
+          
+          {/* List Rendering */}
+          <div className="flex flex-col gap-4">
+            {loading ? (
+              <div className="flex justify-center p-8">
+                <iconify-icon icon="eos-icons:loading" width="40" style={{ color: 'var(--color-brand)' }} />
+              </div>
+            ) : filteredTasks.length === 0 ? (
+              <div className="text-center text-text-muted p-12 flex flex-col items-center gap-4">
+                <iconify-icon icon="mdi:clipboard-text-outline" width="48" />
+                <p className="text-base">No {filter !== 'all' ? filter : ''} tasks found. You're all caught up!</p>
+              </div>
+            ) : (
+              filteredTasks.map(task => (
+                <TaskItem 
+                  key={task._id} 
+                  task={task} 
+                  onToggle={handleToggleTask} 
+                  onDelete={handleDeleteTask} 
+                />
+              ))
+            )}
+          </div>
+
+        </div>
+      </main>
+
+    </div>
+  );
+};
+
+export default Dashboard;
+
+```
+
+### ⚡ FINAL SYSTEM TEST (DAY 1)
+
+App ekdum taiyaar hai! Pura flow check kijiye:
+
+1. Naya task likh kar add karein (Optimistic UI se fatafat dikhna chahiye).
+2. Circle (checkbox) par click karke task ko complete karein (line-through lag jayega aur fade ho jayega).
+3. "Pending" aur "Completed" filters click karke check karein ki data sahi se filter ho raha hai.
+4. Trash icon par click karke task delete karein.
+5. Page refresh karein — JWT localStorage mein hone ki wajah se direct Dashboard open hona chahiye aur database se fetched actual state dikhni chahiye.
+
+Agar sab kuch flawless chal raha hai, toh aapka MERN Auth + CRUD skeleton production-ready hai. Reply mein **"DONE DAY 1"** type kar dijiye, fir hum aur complex real-world logic par focus karenge!
