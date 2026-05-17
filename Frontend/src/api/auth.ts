@@ -1,7 +1,8 @@
 import axios from "axios";
 
-const AUTH_URL = "http://localhost:5000/api/auth";
-const TASK_URL = "http://localhost:5000/api/task";
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+const AUTH_URL = `${API_BASE_URL}/api/auth`;
+const TASK_URL = `${API_BASE_URL}/api/task`;
 
 // User aur Auth Data ke Types
 export interface UserPayload {
